@@ -311,6 +311,8 @@ def flatten_cif(cif: Dict[str, Any]) -> List[Dict[str, Any]]:
     
     # Flatten client_updates
     for i, client in enumerate(cif.get("client_updates", []) or []):
+        if not isinstance(client, dict):
+            continue
         for key, value in client.items():
             if key == "party":  # Skip party as it's metadata
                 continue
@@ -325,19 +327,22 @@ def flatten_cif(cif: Dict[str, Any]) -> List[Dict[str, Any]]:
     
     # Flatten household_updates
     household = cif.get("household_updates", {}) or {}
-    for key, value in household.items():
-        if key == "party":  # Skip party as it's metadata
-            continue
-        path = f"household_updates.{key}"
-        field_id = f"household.{key}"
-        rows.append({
-            "path": path,
-            "value": value,
-            "confidence": confidence_map.get(field_id, None),
-        })
+    if isinstance(household, dict):
+        for key, value in household.items():
+            if key == "party":  # Skip party as it's metadata
+                continue
+            path = f"household_updates.{key}"
+            field_id = f"household.{key}"
+            rows.append({
+                "path": path,
+                "value": value,
+                "confidence": confidence_map.get(field_id, None),
+            })
     
     # Flatten dependants
     for i, dep in enumerate(cif.get("dependants", []) or []):
+        if not isinstance(dep, dict):
+            continue
         for key, value in dep.items():
             if key == "party":  # Skip party as it's metadata
                 continue
@@ -351,6 +356,8 @@ def flatten_cif(cif: Dict[str, Any]) -> List[Dict[str, Any]]:
     
     # Flatten fact_find_items (just the label, other fields are metadata)
     for i, item in enumerate(cif.get("fact_find_items", []) or []):
+        if not isinstance(item, dict):
+            continue
         path = f"fact_find_items[{i}].label"
         rows.append({
             "path": path,
@@ -360,6 +367,8 @@ def flatten_cif(cif: Dict[str, Any]) -> List[Dict[str, Any]]:
     
     # Flatten extractions (show field_id and extracted_value)
     for i, ext in enumerate(cif.get("extractions", []) or []):
+        if not isinstance(ext, dict):
+            continue
         field_id = ext.get("field_id", "")
         extracted_value = ext.get("extracted_value", {})
         value = extracted_value.get("value") if isinstance(extracted_value, dict) else extracted_value
