@@ -496,7 +496,7 @@ else:
     st.write(f"Found {len(rows)} total fields")
 
     # Optional: filter out null fields to reduce noise
-    show_nulls = st.checkbox("Show empty (null) fields", value=False)
+    show_nulls = st.checkbox("Show empty (null) fields", value=True)
     if not show_nulls:
         rows = [r for r in rows if r["value"] is not None]
         st.write(f"Showing {len(rows)} non-null fields")
