@@ -293,108 +293,48 @@ def compress_for_cif(preprocessed: dict) -> dict:
 def flatten_cif(cif: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Turn nested CIF dict into a list for editing.
-    New structure: client_updates[], household_updates{}, dependants[], fact_find_items[], extractions[]
-    Confidence scores are in extractions[].confidence_score, mapped by field_id.
+    New structure: client_updates{}, household_updates{}, dependants[], pensions[], 
+    savings_investments[], employment_income[], goals_objectives[], risk_profile{}
+    Confidence scores are in meta.field_confidences.
     """
     if not cif or not isinstance(cif, dict):
         return []
     
     rows: List[Dict[str, Any]] = []
     
-    # Build confidence map from extractions (field_id -> confidence_score)
+    # Get confidence map from meta.field_confidences
     confidence_map = {}
-    for ext in cif.get("extractions", []) or []:
-        field_id = ext.get("field_id")
-        confidence = ext.get("confidence_score")
-        if field_id and confidence is not None:
-            confidence_map[field_id] = confidence
+    if "meta" in cif and isinstance(cif["meta"], dict):
+        confidence_map = cif["meta"].get("field_confidences", {}) or {}
     
-    # Flatten client_updates
-    for i, client in enumerate(cif.get("client_updates", []) or []):
-        if not isinstance(client, dict):
-            continue
-        for key, value in client.items():
-            if key == "party":  # Skip party as it's metadata
-                continue
-            path = f"client_updates[{i}].{key}"
-            # Map confidence using party + field pattern if available
-            field_id = f"client.{key}"
+    def walk(node: Any, path: str = "", skip_keys: set = None):
+        """Recursively walk the structure and add rows, skipping certain keys."""
+        if skip_keys is None:
+            skip_keys = {"meta", "client_confidences", "household_confidences", "dependants_confidences"}
+        
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in skip_keys:
+                    continue
+                new_path = f"{path}.{key}" if path else key
+                walk(value, new_path, skip_keys)
+        elif isinstance(node, list):
+            for i, item in enumerate(node):
+                new_path = f"{path}[{i}]"
+                walk(item, new_path, skip_keys)
+        else:
+            # Leaf value - add to rows
             rows.append({
                 "path": path,
-                "value": value,
-                "confidence": confidence_map.get(field_id, None),
+                "value": node,
+                "confidence": confidence_map.get(path, None),
             })
     
-    # Flatten household_updates
-    household = cif.get("household_updates", {}) or {}
-    if isinstance(household, dict):
-        for key, value in household.items():
-            if key == "party":  # Skip party as it's metadata
-                continue
-            path = f"household_updates.{key}"
-            field_id = f"household.{key}"
-            rows.append({
-                "path": path,
-                "value": value,
-                "confidence": confidence_map.get(field_id, None),
-            })
-    
-    # Flatten dependants
-    for i, dep in enumerate(cif.get("dependants", []) or []):
-        if not isinstance(dep, dict):
-            continue
-        for key, value in dep.items():
-            if key == "party":  # Skip party as it's metadata
-                continue
-            path = f"dependants[{i}].{key}"
-            field_id = f"dependant.{key}"
-            rows.append({
-                "path": path,
-                "value": value,
-                "confidence": confidence_map.get(field_id, None),
-            })
-    
-    # Flatten fact_find_items (just the label, other fields are metadata)
-    for i, item in enumerate(cif.get("fact_find_items", []) or []):
-        if not isinstance(item, dict):
-            continue
-        path = f"fact_find_items[{i}].label"
-        rows.append({
-            "path": path,
-            "value": item.get("label"),
-            "confidence": None,  # No confidence for fact_find_items themselves
-        })
-    
-    # Flatten extractions (show field_id and extracted_value)
-    for i, ext in enumerate(cif.get("extractions", []) or []):
-        if not isinstance(ext, dict):
-            continue
-        field_id = ext.get("field_id", "")
-        extracted_value = ext.get("extracted_value", {})
-        value = extracted_value.get("value") if isinstance(extracted_value, dict) else extracted_value
-        confidence = ext.get("confidence_score")
-        
-        path = f"extractions[{i}].field_id"
-        rows.append({
-            "path": path,
-            "value": field_id,
-            "confidence": confidence,
-        })
-        
-        path = f"extractions[{i}].extracted_value.value"
-        rows.append({
-            "path": path,
-            "value": value,
-            "confidence": confidence,
-        })
-        
-        # Also show evidence_snippet
-        path = f"extractions[{i}].evidence_snippet"
-        rows.append({
-            "path": path,
-            "value": ext.get("evidence_snippet"),
-            "confidence": confidence,
-        })
+    # Walk through all top-level sections
+    for key in ["client_updates", "household_updates", "dependants", "pensions", 
+                "savings_investments", "employment_income", "goals_objectives", "risk_profile"]:
+        if key in cif:
+            walk(cif[key], key)
     
     return rows
 
