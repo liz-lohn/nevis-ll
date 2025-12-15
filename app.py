@@ -302,10 +302,59 @@ def flatten_cif(cif: Dict[str, Any]) -> List[Dict[str, Any]]:
     
     rows: List[Dict[str, Any]] = []
     
-    # Get confidence map from meta.field_confidences
+    # Build comprehensive confidence map from all sources
     confidence_map = {}
+    
+    # Get from meta.field_confidences (primary source)
     if "meta" in cif and isinstance(cif["meta"], dict):
-        confidence_map = cif["meta"].get("field_confidences", {}) or {}
+        meta_confidences = cif["meta"].get("field_confidences", {}) or {}
+        confidence_map.update(meta_confidences)
+    
+    # Also check separate confidence objects
+    if "client_confidences" in cif and isinstance(cif["client_confidences"], dict):
+        confidence_map.update(cif["client_confidences"])
+    if "household_confidences" in cif and isinstance(cif["household_confidences"], dict):
+        confidence_map.update(cif["household_confidences"])
+    if "dependants_confidences" in cif and isinstance(cif["dependants_confidences"], dict):
+        confidence_map.update(cif["dependants_confidences"])
+    
+    def path_to_confidence_key(path: str) -> str:
+        """Convert path like 'client_updates.primary.first_name' to confidence key like 'client.primary.first_name'."""
+        # Replace common prefixes
+        result = path.replace("client_updates.", "client.")
+        result = result.replace("household_updates.", "household.")
+        return result
+    
+    def get_confidence(path: str) -> Any:
+        """Get confidence score for a path, trying multiple key formats."""
+        # Try direct match first
+        if path in confidence_map:
+            return confidence_map[path]
+        
+        # Try converted format (client_updates -> client, household_updates -> household)
+        converted_key = path_to_confidence_key(path)
+        if converted_key in confidence_map:
+            return confidence_map[converted_key]
+        
+        # Convert array notation [0] to dot notation .0 (for confidence keys like pensions.0.owner)
+        path_dot_indices = re.sub(r'\[(\d+)\]', r'.\1', path)
+        if path_dot_indices != path:
+            if path_dot_indices in confidence_map:
+                return confidence_map[path_dot_indices]
+            converted_dot = path_to_confidence_key(path_dot_indices)
+            if converted_dot in confidence_map:
+                return confidence_map[converted_dot]
+        
+        # Try without array indices (for array fields like pensions[0].owner -> pensions.owner)
+        path_no_indices = re.sub(r'\[\d+\]', '', path)
+        if path_no_indices != path:
+            if path_no_indices in confidence_map:
+                return confidence_map[path_no_indices]
+            converted_no_indices = path_to_confidence_key(path_no_indices)
+            if converted_no_indices in confidence_map:
+                return confidence_map[converted_no_indices]
+        
+        return None
     
     def walk(node: Any, path: str = "", skip_keys: set = None):
         """Recursively walk the structure and add rows, skipping certain keys."""
@@ -327,7 +376,7 @@ def flatten_cif(cif: Dict[str, Any]) -> List[Dict[str, Any]]:
             rows.append({
                 "path": path,
                 "value": node,
-                "confidence": confidence_map.get(path, None),
+                "confidence": get_confidence(path),
             })
     
     # Walk through all top-level sections
