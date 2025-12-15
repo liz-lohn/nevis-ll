@@ -1,5 +1,6 @@
 # app.py
 import json
+import os
 import re
 import time
 import random
@@ -20,7 +21,19 @@ MODEL_NAME = "gpt-5.1"                      # can switch to e.g. "gpt-4.1"
 # -----------------------------
 # OPENAI CLIENT (with longer timeout)
 # -----------------------------
+# Get API key from Streamlit secrets or environment variable
+try:
+    api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+except Exception:
+    # Fallback to environment variable if secrets not available
+    api_key = os.environ.get("OPENAI_API_KEY")
+
+if not api_key:
+    st.error("⚠️ OpenAI API key not found. Please set OPENAI_API_KEY in Streamlit secrets or environment variables.")
+    st.stop()
+
 client = OpenAI(
+    api_key=api_key,
     timeout=300.0,  # increased for chunked processing
     max_retries=0,  # we'll handle retries ourselves
 )
