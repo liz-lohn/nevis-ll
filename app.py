@@ -480,13 +480,9 @@ if st.session_state["cif"] is None:
             st.session_state["busy"] = True
             try:
                 transcript_text = uploaded.read().decode("utf-8", errors="replace")
-                
-                # Debug: show transcript info
-                st.info(f"📄 Transcript length: {len(transcript_text):,} characters")
 
                 with st.spinner("Pre-processing transcript in chunks..."):
                     chunks = chunk_text(transcript_text, max_chars=6000)  # Reduced chunk size to avoid input limits
-                    st.info(f"📦 Split into {len(chunks)} chunks (max 6000 chars each)")
                     
                     progress = st.progress(0)
                     status_text = st.empty()
@@ -501,12 +497,7 @@ if st.session_state["cif"] is None:
                     status_text.text(f"✅ Processed all {len(chunks)} chunks. Merging results...")
                     
                     merged_pre = merge_preprocessed(pre_outputs)
-                    total_segments = len(merged_pre.get("segments", []))
-                    st.info(f"📊 Merged {total_segments} segments from all chunks")
-                    
                     pre_for_cif = compress_for_cif(merged_pre)
-                    segments_for_cif = len(pre_for_cif.get("segments_with_text", []))
-                    st.info(f"📦 Prepared {segments_for_cif} segments for CIF extraction")
                     status_text.empty()
 
                 with st.spinner("Extracting CIF..."):
@@ -529,26 +520,15 @@ else:
     cif = st.session_state["cif"]
     st.subheader("Step 2: Review and edit CIF fields")
 
-    # Debug: show CIF structure info
-    with st.expander("🔍 Debug: View CIF structure", expanded=False):
-        st.json(cif)
-        st.write(f"CIF type: {type(cif)}")
-        st.write(f"CIF keys: {list(cif.keys()) if isinstance(cif, dict) else 'Not a dict'}")
-
     rows = flatten_cif(cif)
-    
-    # Debug: show row count
-    st.write(f"Found {len(rows)} total fields")
 
     # Optional: filter out null fields to reduce noise
     show_nulls = st.checkbox("Show empty (null) fields", value=True)
     if not show_nulls:
         rows = [r for r in rows if r["value"] is not None]
-        st.write(f"Showing {len(rows)} non-null fields")
 
     if len(rows) == 0:
         st.warning("⚠️ No fields found in CIF. The CIF structure might be empty or in an unexpected format.")
-        st.write("Please check the debug section above to see the CIF structure.")
         st.stop()
 
     st.caption("Edit values on the left; confidence is shown on the right. Download exports the current JSON.")
