@@ -22,14 +22,26 @@ MODEL_NAME = "gpt-5.1"                      # can switch to e.g. "gpt-4.1"
 # OPENAI CLIENT (with longer timeout)
 # -----------------------------
 # Get API key from Streamlit secrets or environment variable
+api_key = None
+
+# Try Streamlit secrets first (for cloud deployment)
 try:
-    api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-except Exception:
-    # Fallback to environment variable if secrets not available
+    if "OPENAI_API_KEY" in st.secrets:
+        api_key = st.secrets["OPENAI_API_KEY"]
+except (AttributeError, KeyError, TypeError):
+    pass
+
+# Fallback to environment variable (for local development)
+if not api_key:
     api_key = os.environ.get("OPENAI_API_KEY")
 
+# Validate API key
 if not api_key:
     st.error("⚠️ OpenAI API key not found. Please set OPENAI_API_KEY in Streamlit secrets or environment variables.")
+    st.stop()
+elif api_key.startswith("sk-your-") or "placeholder" in api_key.lower() or "example" in api_key.lower():
+    st.error("⚠️ Please replace the placeholder API key with your actual OpenAI API key in Streamlit secrets.")
+    st.info("Go to: Manage app → Secrets → Edit secrets")
     st.stop()
 
 client = OpenAI(
