@@ -225,70 +225,66 @@ def merge_preprocessed(outputs: list[dict]) -> dict:
     """
     Merge preprocessed chunks into one preprocessed object.
     Re-numbers segment_id to be clean.
+    Merges speaker_normalisation from all chunks.
     """
     segments = []
-    normalised_parts = []
+    speaker_normalisation = {
+        "ADVISER": [],
+        "CLIENT": [],
+        "UNKNOWN_LABELS": []
+    }
+    
     for out in outputs:
-        normalised_parts.append(out.get("normalised_transcript", "") or "")
+        # Merge speaker normalisation
+        if "speaker_normalisation" in out:
+            sn = out["speaker_normalisation"]
+            if "ADVISER" in sn:
+                speaker_normalisation["ADVISER"].extend(sn["ADVISER"])
+            if "CLIENT" in sn:
+                speaker_normalisation["CLIENT"].extend(sn["CLIENT"])
+            if "UNKNOWN_LABELS" in sn:
+                speaker_normalisation["UNKNOWN_LABELS"].extend(sn["UNKNOWN_LABELS"])
+        
+        # Merge segments
         segments.extend(out.get("segments", []) or [])
+
+    # Remove duplicates from speaker_normalisation
+    speaker_normalisation["ADVISER"] = list(set(speaker_normalisation["ADVISER"]))
+    speaker_normalisation["CLIENT"] = list(set(speaker_normalisation["CLIENT"]))
+    speaker_normalisation["UNKNOWN_LABELS"] = list(set(speaker_normalisation["UNKNOWN_LABELS"]))
 
     # re-number segment_id to be clean
     for i, seg in enumerate(segments, start=1):
         seg["segment_id"] = i
 
     return {
-        "normalised_transcript": "\n".join([s for s in normalised_parts if s.strip()]),
-        "segments": segments,
-        # global_entities optional – you can drop to reduce size
-        "global_entities": {}
+        "speaker_normalisation": speaker_normalisation,
+        "segments": segments
     }
 
 
-def compress_for_cif(preprocessed: dict, max_msg_chars: int = 240) -> dict:
+def compress_for_cif(preprocessed: dict) -> dict:
     """
-    Reduce payload for CIF extraction:
-    - drop normalised_transcript (huge)
-    - keep segment topic + brief_summary
-    - keep messages but truncate text
-    - keep entities
-    - IMPORTANT: preserve facts field (contains savings numbers, income, etc.)
+    Prepare preprocessed data for CIF extraction.
+    New structure only contains segments with basic info, so no compression needed.
+    Just return segments in the format expected by CIF extraction prompt.
     """
-    compressed_segments = []
-    for seg in preprocessed.get("segments", []) or []:
-        msgs = []
-        for m in seg.get("messages", []) or []:
-            text = (m.get("text") or "")
-            # keep only short snippet; enough for goals/risk phrases
-            text = text[:max_msg_chars]
-            # OPTIONAL: keep only messages that have entities OR are from client
-            entities = m.get("entities") or []
-            if not entities and m.get("speaker") not in ("CLIENT_1", "CLIENT_2"):
-                continue
-
-            msgs.append({
-                "speaker": m.get("speaker"),
-                "text": text,
-                "entities": entities
-            })
-
-        compressed_seg = {
+    segments = preprocessed.get("segments", []) or []
+    
+    # Return segments in the format expected by the CIF extraction prompt
+    # The prompt expects: segment_id, party, topic_label, start_time, end_time, brief_summary
+    segments_for_cif = []
+    for seg in segments:
+        segments_for_cif.append({
             "segment_id": seg.get("segment_id"),
+            "party": seg.get("party"),
             "topic_label": seg.get("topic_label"),
-            "brief_summary": seg.get("brief_summary"),
-            "messages": msgs[:60]  # hard cap to avoid runaway payload
-        }
-        
-        # Preserve facts field - this contains important data like savings numbers
-        if "facts" in seg and seg["facts"]:
-            compressed_seg["facts"] = seg["facts"]
-        
-        # Preserve other important fields that might be needed
-        if "primary_clients_discussed" in seg:
-            compressed_seg["primary_clients_discussed"] = seg["primary_clients_discussed"]
-        
-        compressed_segments.append(compressed_seg)
-
-    return {"segments": compressed_segments}
+            "start_time": seg.get("start_time"),
+            "end_time": seg.get("end_time"),
+            "brief_summary": seg.get("brief_summary")
+        })
+    
+    return {"segments_with_text": segments_for_cif}
 
 
 # -----------------------------
@@ -296,44 +292,101 @@ def compress_for_cif(preprocessed: dict, max_msg_chars: int = 240) -> dict:
 # -----------------------------
 def flatten_cif(cif: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Turn nested CIF dict into a list:
-    [{"path": "clients[0].personal.first_name", "value": "John", "confidence": 0.98}, ...]
+    Turn nested CIF dict into a list for editing.
+    New structure: client_updates[], household_updates{}, dependants[], fact_find_items[], extractions[]
+    Confidence scores are in extractions[].confidence_score, mapped by field_id.
     """
     if not cif or not isinstance(cif, dict):
         return []
     
     rows: List[Dict[str, Any]] = []
-    confidences = cif.get("meta", {}).get("field_confidences", {}) if isinstance(cif.get("meta"), dict) else {}
-
-    def walk(node: Any, path: str = ""):
-        if isinstance(node, dict):
-            # Skip empty dicts
-            if not node:
-                return
-            for k, v in node.items():
-                # skip the confidence map itself
-                if path == "meta" and k == "field_confidences":
-                    continue
-                new_path = f"{path}.{k}" if path else k
-                walk(v, new_path)
-        elif isinstance(node, list):
-            # Skip empty lists
-            if not node:
-                return
-            for i, v in enumerate(node):
-                new_path = f"{path}[{i}]"
-                walk(v, new_path)
-        else:
-            # ignore meta primitives (but allow meta.field_confidences paths through)
-            if path.startswith("meta.") and path != "meta.field_confidences":
-                return
+    
+    # Build confidence map from extractions (field_id -> confidence_score)
+    confidence_map = {}
+    for ext in cif.get("extractions", []) or []:
+        field_id = ext.get("field_id")
+        confidence = ext.get("confidence_score")
+        if field_id and confidence is not None:
+            confidence_map[field_id] = confidence
+    
+    # Flatten client_updates
+    for i, client in enumerate(cif.get("client_updates", []) or []):
+        for key, value in client.items():
+            if key == "party":  # Skip party as it's metadata
+                continue
+            path = f"client_updates[{i}].{key}"
+            # Map confidence using party + field pattern if available
+            field_id = f"client.{key}"
             rows.append({
                 "path": path,
-                "value": node,
-                "confidence": confidences.get(path, None),
+                "value": value,
+                "confidence": confidence_map.get(field_id, None),
             })
-
-    walk(cif)
+    
+    # Flatten household_updates
+    household = cif.get("household_updates", {}) or {}
+    for key, value in household.items():
+        if key == "party":  # Skip party as it's metadata
+            continue
+        path = f"household_updates.{key}"
+        field_id = f"household.{key}"
+        rows.append({
+            "path": path,
+            "value": value,
+            "confidence": confidence_map.get(field_id, None),
+        })
+    
+    # Flatten dependants
+    for i, dep in enumerate(cif.get("dependants", []) or []):
+        for key, value in dep.items():
+            if key == "party":  # Skip party as it's metadata
+                continue
+            path = f"dependants[{i}].{key}"
+            field_id = f"dependant.{key}"
+            rows.append({
+                "path": path,
+                "value": value,
+                "confidence": confidence_map.get(field_id, None),
+            })
+    
+    # Flatten fact_find_items (just the label, other fields are metadata)
+    for i, item in enumerate(cif.get("fact_find_items", []) or []):
+        path = f"fact_find_items[{i}].label"
+        rows.append({
+            "path": path,
+            "value": item.get("label"),
+            "confidence": None,  # No confidence for fact_find_items themselves
+        })
+    
+    # Flatten extractions (show field_id and extracted_value)
+    for i, ext in enumerate(cif.get("extractions", []) or []):
+        field_id = ext.get("field_id", "")
+        extracted_value = ext.get("extracted_value", {})
+        value = extracted_value.get("value") if isinstance(extracted_value, dict) else extracted_value
+        confidence = ext.get("confidence_score")
+        
+        path = f"extractions[{i}].field_id"
+        rows.append({
+            "path": path,
+            "value": field_id,
+            "confidence": confidence,
+        })
+        
+        path = f"extractions[{i}].extracted_value.value"
+        rows.append({
+            "path": path,
+            "value": value,
+            "confidence": confidence,
+        })
+        
+        # Also show evidence_snippet
+        path = f"extractions[{i}].evidence_snippet"
+        rows.append({
+            "path": path,
+            "value": ext.get("evidence_snippet"),
+            "confidence": confidence,
+        })
+    
     return rows
 
 
@@ -447,21 +500,13 @@ if st.session_state["cif"] is None:
                     
                     status_text.text(f"✅ Processed all {len(chunks)} chunks. Merging results...")
                     
-                    # Debug: show facts from each chunk
-                    total_facts = 0
-                    for i, pre in enumerate(pre_outputs, 1):
-                        chunk_facts = sum(len(seg.get("facts", [])) for seg in pre.get("segments", []))
-                        total_facts += chunk_facts
-                        if chunk_facts > 0:
-                            st.write(f"  Chunk {i}: {chunk_facts} facts found")
-                    
                     merged_pre = merge_preprocessed(pre_outputs)
-                    merged_facts = sum(len(seg.get("facts", [])) for seg in merged_pre.get("segments", []))
-                    st.info(f"📊 Merged {len(merged_pre.get('segments', []))} segments with {merged_facts} total facts from all chunks")
+                    total_segments = len(merged_pre.get("segments", []))
+                    st.info(f"📊 Merged {total_segments} segments from all chunks")
                     
                     pre_for_cif = compress_for_cif(merged_pre)
-                    compressed_facts = sum(len(seg.get("facts", [])) for seg in pre_for_cif.get("segments", []))
-                    st.info(f"📦 Compressed to {len(pre_for_cif.get('segments', []))} segments with {compressed_facts} facts preserved")
+                    segments_for_cif = len(pre_for_cif.get("segments_with_text", []))
+                    st.info(f"📦 Prepared {segments_for_cif} segments for CIF extraction")
                     status_text.empty()
 
                 with st.spinner("Extracting CIF..."):
